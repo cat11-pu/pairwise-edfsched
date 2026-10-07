@@ -14,6 +14,7 @@
 """
 
 from fractions import Fraction
+from math import gcd
 
 __all__ = [
     "Job",
@@ -147,9 +148,9 @@ def _spec_list(tasks):
 
 def utilization(tasks):
     """任务集的总利用率。"""
-    total = 0.0
+    total = Fraction(0)
     for spec in _spec_list(tasks):
-        total += spec.cost / spec.period
+        total += Fraction(spec.cost, spec.period)
     return total
 
 
@@ -158,7 +159,10 @@ def hyperperiod(tasks):
     periods = [spec.period for spec in _spec_list(tasks)]
     if not periods:
         return 1
-    return max(periods)
+    result = 1
+    for period in periods:
+        result = result * period // gcd(result, period)
+    return result
 
 
 def demand(tasks, interval):
@@ -167,8 +171,8 @@ def demand(tasks, interval):
         return 0
     total = 0
     for spec in _spec_list(tasks):
-        jobs = interval // spec.period
-        if jobs > 0:
+        if interval >= spec.deadline:
+            jobs = (interval - spec.deadline) // spec.period + 1
             total += jobs * spec.cost
     return total
 
@@ -177,9 +181,10 @@ def _checkpoints(specs, limit):
     """(0, limit] 内需要检查的绝对截止期，升序去重。"""
     points = set()
     for spec in specs:
-        first = spec.offset + spec.deadline
-        if first <= limit:
-            points.add(first)
+        point = spec.offset + spec.deadline
+        while point <= limit:
+            points.add(point)
+            point += spec.period
     return sorted(points)
 
 
@@ -189,7 +194,7 @@ def is_schedulable(tasks):
     if not specs:
         return True
     util = utilization(specs)
-    if util >= Fraction(1):
+    if util > 1:
         return False
     if all(spec.implicit for spec in specs):
         return True
@@ -215,12 +220,11 @@ def _release_jobs(specs, horizon):
 
 
 def _pick_next(ready):
-    """挑出下一个要运行的作业，绝对截止期最早者优先。"""
-    best = None
-    for job in ready:
-        if best is None or job.deadline < best.deadline:
-            best = job
-    return best
+    """挑出下一个要运行的作业，绝对截止期最早者优先，并列时按任务名与
+    作业序号固定打破，保证行为与注册顺序无关。"""
+    if not ready:
+        return None
+    return min(ready, key=lambda job: (job.deadline, job.task.name, job.index))
 
 
 def simulate(tasks, horizon=None):
@@ -260,8 +264,9 @@ def simulate(tasks, horizon=None):
         job = _pick_next(ready)
         if job is None:
             idle += 1
+            last = None
             continue
-        if last is not None and last is not job:
+        if last is not None and last is not job and last.remaining > 0:
             preemptions += 1
         if job.started_at is None:
             job.started_at = now
@@ -269,7 +274,7 @@ def simulate(tasks, horizon=None):
         busy += 1
         if job.remaining == 0:
             job.finished_at = now + 1
-            if job.finished_at >= job.deadline:
+            if job.finished_at > job.deadline:
                 job.missed = True
                 misses.append(job)
             else:
